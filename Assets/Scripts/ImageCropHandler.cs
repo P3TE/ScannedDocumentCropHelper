@@ -49,8 +49,15 @@ namespace DefaultNamespace
         [SerializeField] private Image rhsEdgeLineDisplay;
         [SerializeField] private Image botEdgeLineDisplay;
         
+        [Header("RHS_Cropped_Result")]
+        
+        [SerializeField] private RectTransform outputImageContainer;
+        [SerializeField] private RectTransform outputImageMask;
+        [SerializeField] private Image outputCroppedDisplayImage;
+        
         private Texture2D _tex;
         private Sprite _sprite;
+        private Sprite _outputSprite;
 
         private int _inputRotationDegrees = 0;
         
@@ -63,6 +70,11 @@ namespace DefaultNamespace
         private Vector2 _selectedPositionBotLeft = new Vector2(float.NaN, float.NaN);
         private Vector2 _selectedPositionTopLeft = new Vector2(float.NaN, float.NaN);
         private Vector2 _selectedPositionTopRight = new Vector2(float.NaN, float.NaN);
+        
+        // Texture space selected position (origin at bottom left of texture, in pixels).
+        private Vector2 _inputTextureSelectedBotLeft;
+        private Vector2 _inputTextureSelectedTopLeft;
+        private Vector2 _inputTextureSelectedTopRight;
         
         private void Start()
         {
@@ -128,7 +140,7 @@ namespace DefaultNamespace
             }
             else if (boxCropStage == BoxCropStage.TopLeftSelected)
             {
-                _selectedPositionTopRight = GetRelativeMousePositionInContainer();
+                SetTopRightPositionBasedOnMouse(GetRelativeMousePositionInContainer());
                 boxCropStage = BoxCropStage.TopRightSelected;
             }
             
@@ -154,6 +166,10 @@ namespace DefaultNamespace
             
             inputDisplayImage.sprite = _sprite;
             inputDisplayImage.enabled = true;
+            
+            _outputSprite = Sprite.Create(_tex, textureRect, pivot);
+            outputCroppedDisplayImage.sprite = _outputSprite;
+            outputCroppedDisplayImage.enabled = true;
         }
 
         private void OnDestroy()
@@ -165,6 +181,141 @@ namespace DefaultNamespace
         {
             FitImageToDisplayArea();
             UpdateBoxArea();
+            UpdateImageCoords();
+        }
+
+        private void UpdateImageCoords()
+        {
+            if (!CalculateOutputBox())
+            {
+                outputImageMask.gameObject.SetActive(false);
+                return;
+            }
+            
+            outputImageMask.gameObject.SetActive(true);
+            UpdateOutputImage();
+        }
+
+        private void UpdateOutputImage()
+        {
+            // private Vector2 _inputTextureSelectedBotLeft;
+            // private Vector2 _inputTextureSelectedTopLeft;
+            // private Vector2 _inputTextureSelectedTopRight;
+            
+            Vector2 textureBotLeftToTopLeft = _inputTextureSelectedTopLeft - _inputTextureSelectedBotLeft;
+            Vector2 textureTopLeftToTopRight = _inputTextureSelectedTopRight - _inputTextureSelectedTopLeft;
+            
+            float cropWidthPixels = textureTopLeftToTopRight.magnitude;
+            float cropHeightPixels = textureBotLeftToTopLeft.magnitude;
+            
+            Vector2 cropSize = new Vector2(cropWidthPixels, cropHeightPixels);
+            Vector2 displaySizePixels = FitOutputImageToDisplayArea(cropSize);
+
+            float outputImageRotationRadians = Mathf.Atan2(textureTopLeftToTopRight.y, textureTopLeftToTopRight.x);
+            float outputImageRotationDegrees = outputImageRotationRadians * Mathf.Rad2Deg;
+            Quaternion outputImageRotation = Quaternion.Euler(0, 0, -outputImageRotationDegrees);
+            outputCroppedDisplayImage.rectTransform.rotation = outputImageRotation;
+
+            float ratioOfDisplaySizeToCropSize = displaySizePixels.x / cropWidthPixels;
+            Vector2 outputImageSize = _tex.Size() * ratioOfDisplaySizeToCropSize;
+            outputCroppedDisplayImage.rectTransform.sizeDelta = outputImageSize;
+            
+            // Calculate the pivot
+            Vector2 cropCenterInTextureSpace = _inputTextureSelectedBotLeft + (textureBotLeftToTopLeft * 0.5f) + (textureTopLeftToTopRight * 0.5f);
+            Vector2 cropCenterOffsetFromTextureCenter = cropCenterInTextureSpace - new Vector2(_tex.width * 0.5f, _tex.height * 0.5f);
+            Vector2 cropCenterOffsetFromTextureCenterInOutputImage = cropCenterOffsetFromTextureCenter * ratioOfDisplaySizeToCropSize;
+            
+            Vector2 outputImageAnchoredPosition = outputImageRotation * -cropCenterOffsetFromTextureCenterInOutputImage;
+            outputCroppedDisplayImage.rectTransform.anchoredPosition = outputImageAnchoredPosition;
+        }
+        
+        private Vector2 FitOutputImageToDisplayArea(Vector2 cropSize)
+        {
+            Rect availableSpace = outputImageContainer.rect;
+            float outputTextureAspect = cropSize.x / cropSize.y;
+            
+            float widthWhenFittingHeight = availableSpace.height * outputTextureAspect;
+            float heightWhenFittingWidth = availableSpace.width / outputTextureAspect;
+
+            Vector2 displaySize;
+            if (widthWhenFittingHeight <= availableSpace.width)
+            {
+                // Fit by height
+                displaySize = new Vector2(widthWhenFittingHeight, availableSpace.height);
+            }
+            else
+            {
+                // Fit by width
+                displaySize = new Vector2(availableSpace.width, heightWhenFittingWidth);
+            }
+            
+            outputImageMask.sizeDelta = displaySize;
+            return displaySize;
+        }
+
+        private bool CalculateOutputBox()
+        {
+            if (boxCropStage <= BoxCropStage.BotLeftSelected) return false;
+            
+            if (!float.IsFinite(_selectedPositionBotLeft.x)) return false;
+            if (!float.IsFinite(_selectedPositionTopLeft.x)) return false;
+            if (!float.IsFinite(_selectedPositionTopRight.x)) return false;
+
+            _inputTextureSelectedBotLeft = ToInputTexturePosition(_selectedPositionBotLeft);
+            _inputTextureSelectedTopLeft = ToInputTexturePosition(_selectedPositionTopLeft);
+            _inputTextureSelectedTopRight = ToInputTexturePosition(_selectedPositionTopRight);
+            
+            Vector2 textureBotLeftToTopLeft = _inputTextureSelectedTopLeft - _inputTextureSelectedBotLeft;
+            Vector2 textureTopLeftToTopRight = _inputTextureSelectedTopRight - _inputTextureSelectedTopLeft;
+            
+            float cropWidthPixels = textureTopLeftToTopRight.magnitude;
+            float cropHeightPixels = textureBotLeftToTopLeft.magnitude;
+
+            // Make sure that the width and height are valid.
+            if (cropWidthPixels < 10.0f)
+            {
+                return false;
+            }
+
+            if (cropHeightPixels < 10.0f)
+            {
+                return false;
+            }
+            
+            float angleOfUpDirectionRadians = Mathf.Atan2(textureBotLeftToTopLeft.y, textureBotLeftToTopLeft.x);
+            float angleOfRightDirectionRadians = Mathf.Atan2(textureTopLeftToTopRight.y, textureTopLeftToTopRight.x);
+
+            float angleDifferenceRadians = angleOfUpDirectionRadians - angleOfRightDirectionRadians;
+            const float tau = Mathf.PI * 2.0f;
+            angleDifferenceRadians = ((angleDifferenceRadians % tau) + tau) % tau; // Keep in range [0, tau)
+
+            if (angleDifferenceRadians > Mathf.PI)
+            {
+                // Debug.Log("Image is flipped, which is not supported.");
+                return false;
+            }
+
+            return true;
+        }
+
+        private Vector2 ToInputTexturePosition(Vector2 positionInInputContainer)
+        {
+            // A value in the range [-1.0, 1.0]
+            float offsetXRatio = (positionInInputContainer.x * 2.0f) / _finalDisplaySize.x;
+            float offsetYRatio = (positionInInputContainer.y * 2.0f) / _finalDisplaySize.y;
+            
+            // TODO - Implement the rotation of the offset based on _inputRotationDegrees.
+            
+            // Get the texture position. [0.0, 1.0]
+            // float textureXRatio = Mathf.Clamp01(offsetXRatio * 0.5f + 0.5f);
+            // float textureYRatio = Mathf.Clamp01(offsetYRatio * 0.5f + 0.5f);
+            float textureXRatio = (offsetXRatio * 0.5f) + 0.5f;
+            float textureYRatio = (offsetYRatio * 0.5f) + 0.5f;            
+            
+            float textureX = textureXRatio * _tex.width;
+            float textureY = textureYRatio * _tex.height;
+            
+            return new Vector2(textureX, textureY);
         }
 
         private void UpdateBoxArea()
@@ -189,29 +340,33 @@ namespace DefaultNamespace
             } 
             else if (boxCropStage == BoxCropStage.TopLeftSelected)
             {
-                Vector2 desiredTopRightPosition = GetRelativeMousePositionInContainer();
-                Vector2 topLeftToDesiredTopRight = desiredTopRightPosition - _selectedPositionTopLeft;
-                
-                Vector2 botLeftToTopLeft = _selectedPositionTopLeft - _selectedPositionBotLeft;
-                Vector2 botLeftToTopLeftNormalised = botLeftToTopLeft.normalized;
-                Vector2 topLeftToTopRightDirection = new Vector2(botLeftToTopLeftNormalised.y, -botLeftToTopLeftNormalised.x); // Rotate 90 degrees to get the direction from top left to top right
-                
-                // Find the closest point on the line defined by the _selectedPositionTopLeft and the direction topLeftToTopRightDirection.
-
-                float length = Vector2.Dot(topLeftToDesiredTopRight, topLeftToTopRightDirection);
-                
-                _selectedPositionTopRight = _selectedPositionTopLeft + length * topLeftToTopRightDirection;
-                
-                UpdatePoint(topRightPositionDisplay, _selectedPositionTopRight);
-                Vector2 topLeftToTopRight = _selectedPositionTopRight - _selectedPositionTopLeft;
-                Vector2 botRightPosition = _selectedPositionBotLeft + topLeftToTopRight;
-                
-                UpdateLine(topEdgeLineDisplay, _selectedPositionTopLeft, _selectedPositionTopRight);
-                UpdateLine(rhsEdgeLineDisplay, _selectedPositionTopRight, botRightPosition);
-                UpdateLine(botEdgeLineDisplay, botRightPosition, _selectedPositionBotLeft);
+                SetTopRightPositionBasedOnMouse(GetRelativeMousePositionInContainer());
             }
         }
-        
+
+        private void SetTopRightPositionBasedOnMouse(Vector2 mousePosition)
+        {
+            Vector2 topLeftToDesiredTopRight = mousePosition - _selectedPositionTopLeft;
+                
+            Vector2 botLeftToTopLeft = _selectedPositionTopLeft - _selectedPositionBotLeft;
+            Vector2 botLeftToTopLeftNormalised = botLeftToTopLeft.normalized;
+            Vector2 topLeftToTopRightDirection = new Vector2(botLeftToTopLeftNormalised.y, -botLeftToTopLeftNormalised.x); // Rotate 90 degrees to get the direction from top left to top right
+                
+            // Find the closest point on the line defined by the _selectedPositionTopLeft and the direction topLeftToTopRightDirection.
+
+            float length = Vector2.Dot(topLeftToDesiredTopRight, topLeftToTopRightDirection);
+                
+            _selectedPositionTopRight = _selectedPositionTopLeft + length * topLeftToTopRightDirection;
+                
+            UpdatePoint(topRightPositionDisplay, _selectedPositionTopRight);
+            Vector2 topLeftToTopRight = _selectedPositionTopRight - _selectedPositionTopLeft;
+            Vector2 botRightPosition = _selectedPositionBotLeft + topLeftToTopRight;
+                
+            UpdateLine(topEdgeLineDisplay, _selectedPositionTopLeft, _selectedPositionTopRight);
+            UpdateLine(rhsEdgeLineDisplay, _selectedPositionTopRight, botRightPosition);
+            UpdateLine(botEdgeLineDisplay, botRightPosition, _selectedPositionBotLeft);
+        }
+
         private void UpdateBoxCropDisplays()
         {
             botLeftPositionDisplay.gameObject.SetActive(boxCropStage >= BoxCropStage.NoSelectionsMade);
@@ -316,6 +471,12 @@ namespace DefaultNamespace
             {
                 Object.Destroy(_sprite);
                 _sprite = null;
+            }
+
+            if (_outputSprite != null)
+            {
+                Object.Destroy(_outputSprite);
+                _outputSprite = null;
             }
         }
     }
