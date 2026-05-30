@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
 using Object = UnityEngine.Object;
 
@@ -247,6 +248,7 @@ namespace DefaultNamespace
         private void UpdateRhsDisplay()
         {
             outputRawImage.enabled = _outputTextureIsValidForDisplay;
+            outputRawImage.gameObject.SetActive(_outputTextureIsValidForDisplay);
 
             if (_outputTextureIsValidForDisplay)
             {
@@ -278,6 +280,26 @@ namespace DefaultNamespace
                 
                 outputRawImage.rectTransform.sizeDelta = finalOutputImageSize;
                 outputRawImage.rectTransform.anchoredPosition = Vector2.zero;
+                
+                // fullOutputImage
+                Vector2 textureBotLeftToTopLeft = _inputTextureSelectedPositions.TopLeft - _inputTextureSelectedPositions.BotLeft;
+                Vector2 textureTopLeftToTopRight = _inputTextureSelectedPositions.TopRight - _inputTextureSelectedPositions.TopLeft;
+                
+                float outputImageRotationRadians = Mathf.Atan2(textureTopLeftToTopRight.y, textureTopLeftToTopRight.x);
+                float outputImageRotationDegrees = outputImageRotationRadians * Mathf.Rad2Deg;
+                Quaternion outputImageRotation = Quaternion.Euler(0, 0, -outputImageRotationDegrees);
+                fullOutputImage.rectTransform.rotation = outputImageRotation;
+
+                // Vector2 outputImageSize = fullOutputImage.rectTransform.sizeDelta;
+                // fullOutputImage.rectTransform.sizeDelta = outputImageSize;
+            
+                // Calculate the pivot
+                Vector2 cropCenterInTextureSpace = _inputTextureSelectedPositions.BotLeft + (textureBotLeftToTopLeft * 0.5f) + (textureTopLeftToTopRight * 0.5f);
+                Vector2 cropCenterOffsetFromTextureCenter = cropCenterInTextureSpace - new Vector2(_tex.width * 0.5f, _tex.height * 0.5f);
+                Vector2 cropCenterOffsetFromTextureCenterInOutputImage = cropCenterOffsetFromTextureCenter;
+            
+                Vector2 outputImageAnchoredPosition = outputImageRotation * -cropCenterOffsetFromTextureCenterInOutputImage;
+                fullOutputImage.rectTransform.anchoredPosition = outputImageAnchoredPosition;
             }
         }
 
@@ -324,6 +346,11 @@ namespace DefaultNamespace
             _outputTexture = new RenderTexture(cropWidthPixels, cropHeightPixels, 32, RenderTextureFormat.ARGB32);
             renderTexNum++;
             _outputTexture.name = $"({cropWidthPixels}x{cropHeightPixels}) Output {renderTexNum}";
+            
+            // Make sure that the Render Mode is ScreenSpaceCamera, ScreenSpaceOverlay doesn't work with Render Texture for whatever reason.
+            outputImageCanvas.renderMode = RenderMode.ScreenSpaceCamera;
+            outputImageCanvas.worldCamera = outputImageCamera;
+            
             outputImageCamera.targetTexture = _outputTexture;
             outputRawImage.texture = _outputTexture;
 
