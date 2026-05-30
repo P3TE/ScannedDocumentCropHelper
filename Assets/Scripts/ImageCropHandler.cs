@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using CompactExifLib;
 using Unity.VisualScripting;
 using Unity.VisualScripting.InputSystem;
 using UnityEngine;
@@ -205,6 +206,10 @@ namespace DefaultNamespace
         private void LoadImage()
         {
             string fileName = Path.GetFileName(InputImagePath);
+
+            Debug.Log("Loading exif data...");
+            ExifData exifData = new(InputImagePath);
+            PrintExifData(exifData);
             
             byte[] data = File.ReadAllBytes(InputImagePath);
             TryDestroyObject(ref _tex);
@@ -218,6 +223,62 @@ namespace DefaultNamespace
             
             // Always display the full output image at the texture's native resolution.
             fullOutputImage.rectTransform.sizeDelta = new Vector2(_tex.width, _tex.height); 
+        }
+
+        private void PrintExifData(ExifData originalExifData)
+        {
+            // Copy the original ExifData into a new ExifData instance.
+            ExifData exifData = ExifData.Empty();
+            exifData.ReplaceAllTagsBy(originalExifData);
+            
+            foreach (ExifIfd ifd in Enum.GetValues(typeof(ExifIfd)))
+            {
+                Debug.Log($"Checking ifd: {ifd}");
+                exifData.InitTagEnumeration(ifd);
+                
+                while (exifData.EnumerateNextTag(out ExifTag exifTag))
+                {
+                    // exifTag.
+                    Debug.Log($"Found exif tag: {exifTag}");
+
+                    exifData.GetTagType(exifTag, out ExifTagType tagType);
+                    exifData.GetTagValueCount(exifTag, out int valueCount);
+
+                    Debug.Log($"It has tagType: {tagType} with a value count of: {valueCount}");
+
+                    if (tagType == ExifTagType.Ascii)
+                    {
+                        bool success = exifData.GetTagRawData(exifTag, out ExifTagType tagType2, out int valueCount2,
+                            out byte[] rawData);
+
+                        if (!success)
+                        {
+                            Debug.Log($"Failed to get raw data for tag {exifTag}");
+                        }
+                        else
+                        {
+                            string rawDataAsString = System.Text.Encoding.UTF8.GetString(rawData);
+                            Debug.Log(
+                                $"Raw data tagType2 = {tagType2}, valueCount2 = {valueCount2} as string: {rawDataAsString}");
+                        }
+                    }
+                    else if (tagType == ExifTagType.URational)
+                    {
+                        for (int i = 0; i < valueCount; i++)
+                        {
+                            exifData.GetTagValue(exifTag, out ExifRational value, 0);
+                            Debug.Log($"Value {i} = Sign = {value.Sign}, Numer = {value.Numer}, Denom = {value.Denom}");
+                        }
+                    } else if (tagType == ExifTagType.UShort)
+                    {
+                        for (int i = 0; i < valueCount; i++)
+                        {
+                            exifData.GetTagValue(exifTag, out uint value, i);
+                            Debug.Log($"Value {i} = value = {value}");
+                        }
+                    }
+                }
+            }
         }
 
         private static void LoadSprite(Texture2D tex, ref Sprite sprite, string imageName, Image displayImage)
