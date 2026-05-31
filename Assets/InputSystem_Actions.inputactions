@@ -149,6 +149,15 @@
                     "processors": "",
                     "interactions": "",
                     "initialStateCheck": false
+                },
+                {
+                    "name": "SaveOutputImage",
+                    "type": "Button",
+                    "id": "fe30e26b-7100-4499-847c-df5b68b8acdc",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
                 }
             ],
             "bindings": [
@@ -611,6 +620,17 @@
                     "processors": "",
                     "groups": "",
                     "action": "ResetToThirdSelection",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
+                    "id": "cbeb0832-cda5-40d4-b7b8-7ca17ba56286",
+                    "path": "<Keyboard>/space",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "SaveOutputImage",
                     "isComposite": false,
                     "isPartOfComposite": false
                 }

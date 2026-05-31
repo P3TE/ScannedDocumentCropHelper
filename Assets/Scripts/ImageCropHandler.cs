@@ -1,6 +1,9 @@
 using System;
+using System.Collections;
 using System.IO;
+using System.Text;
 using CompactExifLib;
+using TMPro;
 using Unity.VisualScripting;
 using Unity.VisualScripting.InputSystem;
 using UnityEngine;
@@ -23,11 +26,25 @@ namespace DefaultNamespace
     
     public class ImageCropHandler : MonoBehaviour
     {
-        private const string InputImagePath = @"/home/p3te/Pictures/d5200/photocopy_d5200/original/2026-04-18_16-37-12_full_res.jpg";
+        // private const string InputImagePath = @"/home/p3te/Pictures/d5200/photocopy_d5200/original/2026-04-18_16-37-12_full_res.jpg";
+        // private const string OutputImagePath = @"/home/p3te/Pictures/d5200/photocopy_d5200/cropped_and_rotated/test_output_1.jpg";
 
+        private InputOutputImagesHelper _inputOutputImagesHelper = new(
+            "/home/p3te/Pictures/d5200/photocopy_d5200/original/",
+            "/home/p3te/Pictures/d5200/photocopy_d5200/cropped_and_rotated/"
+        );
 
         [SerializeField] private RectTransform inputImageContainer;
         [SerializeField] private Image inputDisplayImage;
+        
+        [Space]
+        
+        [SerializeField] private TextMeshProUGUI progressText;
+        [SerializeField] private TMP_InputField qualityInputField;
+        [SerializeField] private PopupToast toast;
+        [SerializeField] private Color goodToastColor;
+        
+        [Space]
         
         [SerializeField] private InputActionReference rotateInputCounterClockwiseActionReference;
         [SerializeField] private InputActionReference rotateInputClockwiseActionReference;
@@ -42,6 +59,10 @@ namespace DefaultNamespace
         [SerializeField] private InputActionReference resetToFirstSelectionActionReference;
         [SerializeField] private InputActionReference resetToSecondSelectionActionReference;
         [SerializeField] private InputActionReference resetToThirdSelectionActionReference;
+        
+        [Space]
+        
+        [SerializeField] private InputActionReference saveOutputFileActionReference;
 
         [Header("Box Crop Display")]
         [SerializeField] private Image botLeftPositionDisplay;
@@ -75,6 +96,8 @@ namespace DefaultNamespace
         private RenderTexture _outputTexture;
 
         private int _inputRotationDegrees = 0;
+
+        private InputOutputImageFilePair _currentImagePaths;
         
         private Vector2 _finalDisplaySize;
         
@@ -95,6 +118,10 @@ namespace DefaultNamespace
 
         private SelectionPositions _previousTextureSelectedPositions = new();
         private SelectionPositions _inputTextureSelectedPositions = new();
+
+        private ExifData _inputExifDataCopy;
+        
+        private int _outputJpegQuality = 100;
 
         private class SelectionPositions : IEquatable<SelectionPositions>
         {
@@ -127,7 +154,10 @@ namespace DefaultNamespace
         
         private void Start()
         {
-            LoadImage();
+            _inputOutputImagesHelper.FindExistingFiles();
+            UpdateProgressText();
+            
+            LoadNextImage();
             
             rotateInputCounterClockwiseActionReference.action.Enable();
             rotateInputCounterClockwiseActionReference.action.performed += OnRotateInputCounterClockwise;
@@ -148,21 +178,65 @@ namespace DefaultNamespace
             resetToFirstSelectionActionReference.action.performed += ResetToFirstSelection;
             resetToSecondSelectionActionReference.action.performed += ResetToSecondSelection;
             resetToThirdSelectionActionReference.action.performed += ResetToThirdSelection;
+            
+            saveOutputFileActionReference.action.Enable();
+            saveOutputFileActionReference.action.performed += SaveOutputFile;
+            
+            qualityInputField.onEndEdit.AddListener(OnQualityInputFieldEndEdit);
+            ValidateOutputQualitySetting();
+        }
+
+        private void UpdateProgressText()
+        {
+            StringBuilder progressTextBuilder = new();
+            progressTextBuilder.Append(_inputOutputImagesHelper.GetExistingOutputFileCount());
+            progressTextBuilder.Append("/");
+            progressTextBuilder.Append(_inputOutputImagesHelper.TotalFileCount);
+            progressText.text = progressTextBuilder.ToString();
+        }
+        
+        private void OnQualityInputFieldEndEdit(string value)
+        {
+            ValidateOutputQualitySetting();
+        }
+
+        private void ValidateOutputQualitySetting()
+        {
+            string qualityText = qualityInputField.text;
+            
+            if (int.TryParse(qualityText, out int qualityValue))
+            {
+                _outputJpegQuality = Math.Clamp(qualityValue, 0, 100);
+            }
+            
+            qualityInputField.text = _outputJpegQuality.ToString();
         }
 
         private void ResetToFirstSelection(InputAction.CallbackContext obj)
         {
-            boxCropStage = BoxCropStage.NoSelectionsMade;
+            TrySetBoxCropStage(BoxCropStage.NoSelectionsMade);
         }
         
         private void ResetToSecondSelection(InputAction.CallbackContext obj)
         {
-            boxCropStage = BoxCropStage.BotLeftSelected;
+            TrySetBoxCropStage(BoxCropStage.BotLeftSelected);
         }
         
         private void ResetToThirdSelection(InputAction.CallbackContext obj)
         {
-            boxCropStage = BoxCropStage.TopLeftSelected;
+            TrySetBoxCropStage(BoxCropStage.TopLeftSelected);
+        }
+        
+        private void TrySetBoxCropStage(BoxCropStage desiredStage)
+        {
+            if (qualityInputField.isFocused) return;
+            
+            if (boxCropStage < desiredStage)
+            {
+                return;
+            }
+            
+            boxCropStage = desiredStage;
         }
 
         private void OnRotateInputCounterClockwise(InputAction.CallbackContext obj)
@@ -195,23 +269,129 @@ namespace DefaultNamespace
             
             Debug.Log($"boxCropStage = {boxCropStage}");
         }
+        
+        private void SaveOutputFile(InputAction.CallbackContext obj)
+        {
+            TrySaveFile();
+        }
+
+        private void TrySaveFile()
+        {
+            StartCoroutine(SaveOutputFileDelayed());
+        }
+
+        private IEnumerator SaveOutputFileDelayed()
+        {
+            toast.Show("Saving file...", goodToastColor);
+            yield return null;
+            try
+            {
+                PerformFileSave();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("Failed to save file: " + e);
+                toast.Show($"Save failed! {e.Message}", Color.red);
+            }
+        }
+
+        private void PerformFileSave()
+        {
+            Debug.Log("Save output file requested.");
+
+            if (boxCropStage != BoxCropStage.TopRightSelected)
+            {
+                throw new Exception("Cannot save output file because the crop box is not fully defined.");
+            }
+
+            if (!_outputTextureIsValidForDisplay)
+            {
+                throw new Exception("Cannot save output file because the output texture is not valid for display.");
+            }
+
+            if (_outputTexture == null)
+            {
+                throw new Exception($"{nameof(_outputTexture)} is null!");
+            }
+            
+            // _outputTexture.
+            Texture2D texture2D = new Texture2D(_outputTexture.width, _outputTexture.height, TextureFormat.ARGB32, false);
+            RenderTexture.active = _outputTexture;
+            texture2D.ReadPixels(new Rect(0, 0, _outputTexture.width, _outputTexture.height), 0, 0);
+            texture2D.Apply();
+
+            ValidateOutputQualitySetting();
+            byte[] jpegBytes = texture2D.EncodeToJPG(_outputJpegQuality);
+
+            FileStream fileStream = File.OpenWrite(_currentImagePaths.OutputFilePath);
+            fileStream.Write(jpegBytes, 0, jpegBytes.Length);
+            fileStream.Flush();
+            fileStream.Close();
+
+            string outputFileNoExif = _currentImagePaths.OutputFilePath;
+            ExifData outputExifData = new ExifData(outputFileNoExif);
+            outputExifData.ReplaceAllTagsBy(_inputExifDataCopy);
+            
+            // Set the orientation to 0.
+            outputExifData.SetTagValue(ExifTag.Orientation, 0, ExifTagType.UShort);
+            
+            MemoryStream noExifDataStream = new MemoryStream(jpegBytes);
+            noExifDataStream.Seek(0, SeekOrigin.Begin);
+            Stream outputFileStream = File.OpenWrite(_currentImagePaths.OutputFilePath);
+            outputExifData.Save(noExifDataStream, outputFileStream);
+            
+            _currentImagePaths.OnOutputFileCreated();
+            UpdateProgressText();
+            
+            Debug.Log("File saving complete.");
+            
+            LoadNextImage();
+        }
 
         private void RotateInput(int amountDegrees)
         {
-            _inputRotationDegrees += amountDegrees;
-            _inputRotationDegrees = ((_inputRotationDegrees % 360) + 360) % 360; // Keep in range [0, 360)
-            Debug.Log(_inputRotationDegrees);
+            SetRotationOfInputImage(_inputRotationDegrees + amountDegrees);
+        }
+
+        private void SetRotationOfInputImage(int rotationDegrees)
+        {
+            _inputRotationDegrees = ((rotationDegrees % 360) + 360) % 360; // Keep in range [0, 360)
+        }
+
+        private void LoadNextImage()
+        {
+            for(int i = 0; i < _inputOutputImagesHelper.TotalFileCount; i++)
+            {
+                // Find the first image that doesn't have an output file yet.
+                InputOutputImageFilePair filePair = _inputOutputImagesHelper[i];
+                
+                if (!filePair.OutputFileExists)
+                {
+                    _currentImagePaths = filePair;
+                    LoadImage();
+                    return;
+                }
+            }
+            
+            Debug.Log("All images cropped and rotated!");
         }
 
         private void LoadImage()
         {
-            string fileName = Path.GetFileName(InputImagePath);
+            TrySetBoxCropStage(BoxCropStage.NoSelectionsMade);
+            
+            string fileName = Path.GetFileName(_currentImagePaths.InputFilePath);
 
             Debug.Log("Loading exif data...");
-            ExifData exifData = new(InputImagePath);
-            PrintExifData(exifData);
+            ExifData inputExifData = new(_currentImagePaths.InputFilePath);
+            // Copy the original ExifData into a new ExifData instance.
+            _inputExifDataCopy = ExifData.Empty();
+            _inputExifDataCopy.ReplaceAllTagsBy(inputExifData);
+
+            TrySetInitialOrientation(_inputExifDataCopy);
+            // PrintExifData(_inputExifDataCopy);
             
-            byte[] data = File.ReadAllBytes(InputImagePath);
+            byte[] data = File.ReadAllBytes(_currentImagePaths.InputFilePath);
             TryDestroyObject(ref _tex);
             _tex = new Texture2D(2, 2);
             _tex.LoadImage(data);
@@ -225,12 +405,45 @@ namespace DefaultNamespace
             fullOutputImage.rectTransform.sizeDelta = new Vector2(_tex.width, _tex.height); 
         }
 
-        private void PrintExifData(ExifData originalExifData)
+        private void TrySetInitialOrientation(ExifData exifData)
         {
-            // Copy the original ExifData into a new ExifData instance.
-            ExifData exifData = ExifData.Empty();
-            exifData.ReplaceAllTagsBy(originalExifData);
+            exifData.InitTagEnumeration(ExifIfd.PrimaryData);
             
+            while (exifData.EnumerateNextTag(out ExifTag exifTag))
+            {
+                if (exifTag != ExifTag.Orientation) continue;
+                
+                if (!exifData.GetTagType(exifTag, out ExifTagType tagType)) continue;
+
+                if (tagType != ExifTagType.UShort)
+                {
+                    Debug.LogWarning($"{nameof(ExifTag.Orientation)} tag has unexpected tag type: " + tagType);
+                    return;
+                }
+                
+                if (!exifData.GetTagValueCount(exifTag, out int valueCount)) continue;
+
+                if (valueCount != 1)
+                {
+                    Debug.LogWarning("Expected value count of 1 for " + nameof(ExifTag.Orientation) + " tag, but got: " + valueCount);
+                }
+                
+                exifData.GetTagValue(exifTag, out uint value, 0);
+                Debug.Log($"Orientation tag value = {value}");
+
+                if (value == 8)
+                {
+                    SetRotationOfInputImage(-90);
+                }
+                else if (value == 0)
+                {
+                    SetRotationOfInputImage(0);
+                }
+            }
+        }
+
+        private void PrintExifData(ExifData exifData)
+        {
             foreach (ExifIfd ifd in Enum.GetValues(typeof(ExifIfd)))
             {
                 Debug.Log($"Checking ifd: {ifd}");
@@ -389,7 +602,7 @@ namespace DefaultNamespace
             // Update previous values.
             _previousTextureSelectedPositions.SetValues(_inputTextureSelectedPositions);
             
-            TryDestroyObject(ref _outputTexture);
+            TryDestroyOutputRenderTexture();
             
             Vector2 textureBotLeftToTopLeft = _inputTextureSelectedPositions.TopLeft - _inputTextureSelectedPositions.BotLeft;
             Vector2 textureTopLeftToTopRight = _inputTextureSelectedPositions.TopRight - _inputTextureSelectedPositions.TopLeft;
@@ -439,7 +652,8 @@ namespace DefaultNamespace
             outputCroppedDisplayImage.rectTransform.rotation = outputImageRotation;
 
             float ratioOfDisplaySizeToCropSize = displaySizePixels.x / cropWidthPixels;
-            Vector2 outputImageSize = _tex.Size() * ratioOfDisplaySizeToCropSize;
+            Vector2 textureSize = new Vector2(_tex.width, _tex.height);
+            Vector2 outputImageSize = textureSize * ratioOfDisplaySizeToCropSize;
             outputCroppedDisplayImage.rectTransform.sizeDelta = outputImageSize;
             
             // Calculate the pivot
@@ -548,13 +762,7 @@ namespace DefaultNamespace
             float offsetXRatio = (rotatedPositionRelativeToCenter.x * 2.0f) / _finalDisplaySize.x;
             float offsetYRatio = (rotatedPositionRelativeToCenter.y * 2.0f) / _finalDisplaySize.y;
             
-            // _inputRotationDegrees
-            
-            // TODO - Implement the rotation of the offset based on _inputRotationDegrees.
-            
             // Get the texture position. [0.0, 1.0]
-            // float textureXRatio = Mathf.Clamp01(offsetXRatio * 0.5f + 0.5f);
-            // float textureYRatio = Mathf.Clamp01(offsetYRatio * 0.5f + 0.5f);
             float textureXRatio = (offsetXRatio * 0.5f) + 0.5f;
             float textureYRatio = (offsetYRatio * 0.5f) + 0.5f;
             
@@ -562,22 +770,6 @@ namespace DefaultNamespace
             float textureY = textureYRatio * _tex.height;
             
             return new Vector2(textureX, textureY);
-            
-            float textureCenterX = _tex.width * 0.5f;
-            float textureCenterY = _tex.height * 0.5f;
-            
-            float offsetXFromCenter = textureX - textureCenterX;
-            float offsetYFromCenter = textureY - textureCenterY;
-            
-            
-            
-            float rotatedOffsetXFromCenter = offsetXFromCenter * cos - offsetYFromCenter * sin;
-            float rotatedOffsetYFromCenter = offsetXFromCenter * sin + offsetYFromCenter * cos;
-            
-            float rotatedTextureX = textureCenterX + rotatedOffsetXFromCenter;
-            float rotatedTextureY = textureCenterY + rotatedOffsetYFromCenter;
-            
-            return new Vector2(rotatedTextureX, rotatedTextureY);
         }
 
         private static Vector2 RotatePointAroundZero(Vector2 point, float angleRadians)
@@ -731,6 +923,16 @@ namespace DefaultNamespace
             
             inputDisplayImage.rectTransform.sizeDelta = _finalDisplaySize; 
         }
+
+        private void TryDestroyOutputRenderTexture()
+        {
+            if (outputImageCamera != null)
+            {
+                outputImageCamera.targetTexture = null;
+            }
+            
+            TryDestroyObject(ref _outputTexture);
+        }
         
         private void TryDestroyGeneratedObjects()
         {
@@ -738,7 +940,7 @@ namespace DefaultNamespace
             TryDestroyObject(ref _sprite);
             TryDestroyObject(ref _outputSprite);
             TryDestroyObject(ref _outputRenderTextureSprite);
-            TryDestroyObject(ref _outputTexture);
+            TryDestroyOutputRenderTexture();
         }
 
         private static void TryDestroyObject<T>(ref T obj) where T : Object
